@@ -2,7 +2,7 @@
 
 function transform() {
 	// Set custom error handler to handle correct file and line reporting.
-	$opqOldErrorHandler = set_error_handler('transform_handleCallErrors');
+	$opqOldErrorHandler = set_error_handler('_transform_handleCallErrors');
 	
 	$clbTransformerArray = func_get_args();
 	$mixArgumentArray = array();
@@ -32,13 +32,13 @@ function transform() {
 	return $mixArgumentArray;
 }
 
-function transform_handleCallErrors($intCode, $strMessage, $strFileName, $intFileLine, array $mapContext) {
+function _transform_handleCallErrors($intCode, $strMessage, $strFileName, $intFileLine, array $mapContext) {
 	$mapStackFrameArray = debug_backtrace();
 	
 	if (($mapCallStackFrame = $mapStackFrameArray[1]) && isset($mapCallStackFrame['file']) && isset($mapCallStackFrame['function'])) {
 		if ($mapCallStackFrame['file'] === __FILE__ && $mapCallStackFrame['function'] === 'call_user_func_array') {
 			if (error_reporting() & E_ERROR || error_reporting() & E_USER_ERROR) {
-				transform_exitWithError(function($mapTransformStackFrame) use ($strMessage) {
+				_transform_exitWithError(function($mapTransformStackFrame) use ($strMessage) {
 					// Handle invalid callable errors.
 					if (strpos($strMessage, 'parameter 1') !== false) {
 						$strMessage = str_replace('call_user_func_array', $mapTransformStackFrame['function'], $strMessage);
@@ -51,12 +51,12 @@ function transform_handleCallErrors($intCode, $strMessage, $strFileName, $intFil
 					if (strpos($strMessage, 'parameter 2') !== false) {
 						$clbTransformer = $mapCallStackFrame['args'][0];
 						
-						$strTransformerName = transform_functionNameForCallable($clbTransformer);
+						$strTransformerName = _transform_functionNameForCallable($clbTransformer);
 						$strMessage = "{$mapTransformStackFrame['function']}() expects input for $strTransformerName()";
 						
 						// Change file and line location for closures.
 						if (is_object($clbTransformer)) {
-							$objReflector = transform_reflectorForCallable($clbTransformer);
+							$objReflector = _transform_reflectorForCallable($clbTransformer);
 							return array($strMessage, $objReflector->getFileName(), $objReflector->getStartLine());
 						}
 						
@@ -72,8 +72,8 @@ function transform_handleCallErrors($intCode, $strMessage, $strFileName, $intFil
 	return false;
 }
 
-function transform_exitWithError($clbGetErrorMessage) {
-	$mapTransformStackFrame = transform_transformStackFrame();
+function _transform_exitWithError($clbGetErrorMessage) {
+	$mapTransformStackFrame = _transform_transformStackFrame();
 	$tupErrorInfo = call_user_func($clbGetErrorMessage, $mapTransformStackFrame);
 	
 	if (!is_array($tupErrorInfo)) {
@@ -110,7 +110,7 @@ function transform_exitWithError($clbGetErrorMessage) {
 	exit;
 }
 
-function transform_transformStackFrame(array $mapFrameArray = null) {
+function _transform_transformStackFrame(array $mapFrameArray = null) {
 	if ($mapFrameArray === null) {
 		$mapFrameArray = debug_backtrace();
 	}
@@ -128,7 +128,7 @@ function transform_transformStackFrame(array $mapFrameArray = null) {
 	return $mapTransformFrame;
 }
 
-function transform_reflectorForCallable($clbTransformer) {
+function _transform_reflectorForCallable($clbTransformer) {
 	if (is_a($clbTransformer, 'Closure') || (is_string($clbTransformer) && strpos($clbTransformer, '::') === false)) {
 		$objReflector = new ReflectionFunction($clbTransformer);
 	} else if (is_array($clbTransformer)) {
@@ -140,7 +140,7 @@ function transform_reflectorForCallable($clbTransformer) {
 	return $objReflector;
 }
 
-function transform_functionNameForCallable($clbCallable) {
+function _transform_functionNameForCallable($clbCallable) {
 	if (is_object($clbCallable)) {
 		return '{closure}';
 	}
@@ -162,10 +162,10 @@ function transform_functionNameForCallable($clbCallable) {
 	return false;
 }
 
-function returnsTuple($clbFunction) {
+function transform_returnsTuple($clbFunction) {
 	if (!is_callable($clbFunction, true, $strCallable)) {
 		return function() use ($clbFunction) {
-			transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
+			_transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
 				$strVariableType = gettype($clbFunction);
 				return array("'$clbFunction' of type $strVariableType is not callable");
 			});
@@ -176,9 +176,9 @@ function returnsTuple($clbFunction) {
 		$tupReturnValues = call_user_func_array($clbFunction, func_get_args());
 		
 		if (!is_array($tupReturnValues)) {
-			transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
+			_transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
 				if (is_object($clbFunction)) {
-					$objReflector = transform_reflectorForCallable($clbFunction);
+					$objReflector = _transform_reflectorForCallable($clbFunction);
 					
 					return array(
 						'Closure is expected to return array with multiple values',
