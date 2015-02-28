@@ -196,3 +196,51 @@ function transform_returnsTuple($clbFunction) {
 		return array('__^^RETURNS_TUPLE__' => true, '__^^TUPLE_DATA_ARRAY__' => $tupReturnValues);
 	};
 }
+
+function transform_dumpArgument($intArgument) {
+	return transform_returnsTuple(function() {
+		var_dump(func_get_arg($intArgument));
+		return func_get_args();
+	});
+}
+
+function transform_dumpArguments() {
+	return transform_returnsTuple(function() {
+		$mixArgumentArray = func_get_args();
+		var_dump($mixArgumentArray);
+		return $mixArgumentArray;
+	});
+}
+
+function transform_dumpAndInspectArgument($intArgument, $clbInspector) {
+	return transform_returnsTuple(function() use ($intArgument, $clbInspector) {
+		$mixArgument = func_get_arg($intArgument);
+		var_dump($mixArgument);
+		call_user_func($clbInspector, $mixArgument);
+		return func_get_args();
+	});
+}
+
+function transform_dumpAndInspectArguments($clbInspector) {
+	return transform_returnsTuple(function() use ($clbInspector) {
+		$mixArgumentArray = func_get_args();
+		var_dump($mixArgumentArray);
+		call_user_func($clbInspector, $mixArgumentArray);
+		return $mixArgumentArray;
+	});
+}
+
+function transform_inspectArgument($intArgument, $clbInspector) {
+	return transform_returnsTuple(function() use ($intArgument, $clbInspector) {
+		call_user_func($clbInspector, func_get_arg($intArgument));
+		return func_get_args();
+	});
+}
+
+function transform_inspectArguments($clbInspector) {
+	return transform_returnsTuple(function() use ($clbInspector) {
+		$mixArgumentArray = func_get_args();
+		call_user_func($clbInspector, $mixArgumentArray);
+		return $mixArgumentArray;
+	});
+}
