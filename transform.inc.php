@@ -1,17 +1,13 @@
 <?php
 
 function transform() {
-	// Set custom error handler to handle correct file and line reporting.
-	$opqOldErrorHandler = set_error_handler('_transform_handleCallErrors');
-	
 	$clbTransformerArray = func_get_args();
-	$mixArgumentArray = array();
+	$opqOldErrorHandler = set_error_handler('_transform_error_handler');
+	$mixArgumentArray = null;
 	
-	for ($i = 0, $n = sizeof($clbTransformerArray); $i < $n; $i++) {
-		$clbTransformer = $clbTransformerArray[$i];
-		
-		if (is_array($mixArgumentArray) && isset($mixArgumentArray['__^^RETURNS_TUPLE__'])) {
-			$mixArgumentArray = $mixArgumentArray['__^^TUPLE_DATA_ARRAY__'];
+	foreach ($clbTransformerArray as $clbTransformer) {
+		if (_transform_tuple_isValid($mixArgumentArray)) {
+			$mixArgumentArray = _transform_tuple_forceUnwrap($mixArgumentArray);
 		} else if ($mixArgumentArray !== null) {
 			$mixArgumentArray = array($mixArgumentArray);
 		} else {
@@ -21,59 +17,197 @@ function transform() {
 		$mixArgumentArray = call_user_func_array($clbTransformer, $mixArgumentArray);
 	}
 	
-	// Restore error handler.
 	set_error_handler($opqOldErrorHandler);
-	
-	// Unwrap return value if it's a tuple.
-	if (is_array($mixArgumentArray) && isset($mixArgumentArray['__^^RETURNS_TUPLE__'])) {
-		return $mixArgumentArray['__^^TUPLE_DATA_ARRAY__'];
-	}
-	
-	return $mixArgumentArray;
+	return _transform_tuple_unwrap($mixArgumentArray);
 }
 
-function _transform_handleCallErrors($intCode, $strMessage, $strFileName, $intFileLine, array $mapContext) {
-	$mapStackFrameArray = debug_backtrace();
+function transform_debug() {
+	$mixReturnValue = call_user_func_array('transform', array_map(function($clbTransformer) {
+		if ($clbTransformer instanceof _transform_InputTransformer) {
+			return $clbTransformer;
+		}
 	
-	if (($mapCallStackFrame = $mapStackFrameArray[1]) && isset($mapCallStackFrame['file']) && isset($mapCallStackFrame['function'])) {
-		if ($mapCallStackFrame['file'] === __FILE__ && $mapCallStackFrame['function'] === 'call_user_func_array') {
-			if (error_reporting() & E_ERROR || error_reporting() & E_USER_ERROR) {
-				_transform_exitWithError(function($mapTransformStackFrame) use ($strMessage) {
-					// Handle invalid callable errors.
-					if (strpos($strMessage, 'parameter 1') !== false) {
-						$strMessage = str_replace('call_user_func_array', $mapTransformStackFrame['function'], $strMessage);
-						$strMessage = str_replace('parameter 1 to be ', '', $strMessage);
+		if ($clbTransformer instanceof _transform_DebugTransformer) {
+			$clbTransformer = $clbTransformer->getCallable();
+		}
+	
+		return function() use ($clbTransformer) {
+			$mixArgumentArray = func_get_args();
+			$strFunctionName = _transform_callable_getFunctionInfo($clbTransformer);
+		
+			echo "transform($strFunctionName): input begin" . PHP_EOL;
+			var_dump($mixArgumentArray);
+			echo "transform($strFunctionName): input end" . PHP_EOL;
+		
+			return call_user_func_array($clbTransformer, $mixArgumentArray);
+		};
+	}, func_get_args()));
+
+	echo "transform(): output begin" . PHP_EOL;
+	var_dump($mixReturnValue);
+	echo "transform(): output end" . PHP_EOL;
+
+	return $mixReturnValue;
+}
+
+function transform_debugStep(callable $clbTransformer) {
+	return new _transform_DebugTransformer($clbTransformer);
+}
+
+class _transform_DebugTransformer extends _transform_Transformer {
+	protected function transform(callable $clbTransformer, array $mixArgumentArray) {
+		$strFunctionName = _transform_callable_getFunctionInfo($clbTransformer);
+		
+		echo "transform($strFunctionName): input begin" . PHP_EOL;
+		var_dump($mixArgumentArray);
+		echo "transform($strFunctionName): input end" . PHP_EOL;
+		
+		$mixReturnValue = call_user_func_array($clbTransformer, $mixArgumentArray);
+		
+		echo "transform($strFunctionName): output begin" . PHP_EOL;
+		var_dump(_transform_tuple_unwrap($mixReturnValue));
+		echo "transform($strFunctionName): output end" . PHP_EOL;
+		
+		return $mixReturnValue;
+	}
+}
+
+function transform_input() {
+	return new _transform_InputTransformer(func_get_args());
+}
+
+class _transform_InputTransformer extends _transform_Transformer {
+	private $mixArgumentArray;
+	
+	public function __construct(array $mixArgumentArray) {
+		$this->mixArgumentArray = $mixArgumentArray;
+	}
+	
+	protected function transform(callable $clbTransformer = null, array $mixArgumentArray) {
+		return _transform_tuple_wrap($this->mixArgumentArray);
+	}
+}
+
+function transform_returnsTuple(callable $clbTransformer) {
+	return new _transform_TupleTransformer($clbTransformer);
+}
+
+class _transform_TupleTransformer extends _transform_Transformer {
+	protected function transform(callable $clbTransformer, array $mixArgumentArray) {
+		$tupReturnValues = call_user_func_array($this->clbTransformer, $mixArgumentArray);
+		
+		if (!is_array($tupReturnValues)) {
+			_transform_error_exitWithMessageCallable(function($mapTransformStackFrame) use ($clbTransformer) {
+				$strFileName = null;
+				$intFileLine = null;
+				
+				switch (_transform_callable_getType($clbTransformer)) {
+					case 'closure':
+						$objReflector = _transform_callable_getReflector($clbTransformer);
 						
-						return array($strMessage);
-					}
-					
-					// Handle invalid argument errors.
-					if (strpos($strMessage, 'parameter 2') !== false) {
-						$clbTransformer = $mapCallStackFrame['args'][0];
-						
-						$strTransformerName = _transform_functionNameForCallable($clbTransformer);
-						$strMessage = "{$mapTransformStackFrame['function']}() expects input for $strTransformerName()";
-						
-						// Change file and line location for closures.
-						if (is_object($clbTransformer)) {
-							$objReflector = _transform_reflectorForCallable($clbTransformer);
-							return array($strMessage, $objReflector->getFileName(), $objReflector->getStartLine());
-						}
-						
-						return array($strMessage);
-					}
-					
-					assert(0);
-				});
+						$strCallable = 'Closure';
+						$strFileName = $objReflector->getFileName();
+						$intFileLine = $objReflector->getStartLine();
+						break;
+					case 'method':
+						$strCallable = 'Method';
+						break;
+					case 'function':
+						$strCallable = 'Function';
+						break;
+				}
+				
+				return array(
+					"$strCallable is expected to return array with multiple (return) values",
+					$strFileName,
+					$intFileLine,
+				);
+			});
+		}
+		
+		return _transform_tuple_wrap($tupReturnValues);
+	}
+}
+
+function transform_returnsTuple_debugStep(callable $clbTransformer) {
+	return transform_returnsTuple(transform_debugStep($clbTransformer));
+}
+
+function transform_returnsTuple_debug(callable $clbTransformer) {
+	return transform_returnsTuple_debugStep($clbTransformer);
+}
+
+function _transform_callable_getFunctionInfo(callable $clbSubject) {
+	$strBuffer = _transform_callable_getFunctionName($clbSubject);
+	$objReflector = _transform_callable_getReflector($clbSubject);
+	
+	if ($objReflector->isClosure() && $objReflector->isUserDefined()) {
+		$strBuffer .= ' at ';
+		$strBuffer .= basename($objReflector->getFileName());
+		$strBuffer .= ':';
+		$strBuffer .= $objReflector->getStartLine();
+		$strBuffer .= '-';
+		$strBuffer .= $objReflector->getEndLine();
+	}
+	
+	return $strBuffer;
+}
+
+function _transform_callable_getFunctionName(callable $clbSubject) {
+	switch (_transform_callable_getType($clbSubject)) {
+		case 'closure':
+			return '{closure}';
+		case 'method':
+			if (is_string($clbSubject[0])) {
+				$strClassName = $clbSubject[0];
+			} else {
+				$strClassName = get_class($clbSubject[0]);
 			}
+		
+			return "$strClassName::{$clbSubject[1]}";
+		case 'function':
+			return $clbSubject;
+		default:
+			return false;
+	}
+}
+
+function _transform_callable_getReflector(callable $clbSubject) {
+	if ($clbSubject instanceof _transform_Transformer) {
+		$clbSubject = $clbSubject->getCallable();
+	}
+	
+	if ($clbSubject instanceof Closure || (is_string($clbSubject) && strpos($clbSubject, '::') === false)) {
+		$objReflector = new ReflectionFunction($clbSubject);
+	} else if (is_array($clbSubject)) {
+		$objReflector = new ReflectionMethod($clbSubject[0], $clbSubject[1]);
+	} else {
+		$objReflector = new ReflectionMethod($clbSubject);
+	}
+
+	return $objReflector;
+}
+
+function _transform_callable_getType(callable $clbSubject, $blnPreprocessTransformer = true) {
+	if ($clbSubject instanceof _transform_Transformer) {
+		if ($blnPreprocessTransformer) {
+			$clbSubject = $clbSubject->getCallable();
+		} else {
+			return 'transformer';
 		}
 	}
 	
-	return false;
+	if ($clbSubject instanceof Closure) {
+		return 'closure';
+	} else if (is_array($clbSubject) || (is_string($clbSubject) && strpos($clbSubject, '::') !== false)) {
+		return 'method';
+	} else {
+		return 'function';
+	}
 }
 
-function _transform_exitWithError($clbGetErrorMessage) {
-	$mapTransformStackFrame = _transform_transformStackFrame();
+function _transform_error_exitWithMessageCallable(callable $clbGetErrorMessage) {
+	$mapTransformStackFrame = _transform_error_getTransformStackFrame();
 	$tupErrorInfo = call_user_func($clbGetErrorMessage, $mapTransformStackFrame);
 	
 	if (!is_array($tupErrorInfo)) {
@@ -88,10 +222,9 @@ function _transform_exitWithError($clbGetErrorMessage) {
 		$tupErrorInfo[2] = $mapTransformStackFrame['line'];
 	}
 	
-	if (//sizeof($tupErrorInfo) !== 3
-			/*||*/ (isset($tupErrorInfo[1]) && !is_string($tupErrorInfo[0]))
-			|| (isset($tupErrorInfo[2]) && !is_string($tupErrorInfo[1]))
-			|| (isset($tupErrorInfo[3]) && !is_numeric($tupErrorInfo[2])))
+	if ((isset($tupErrorInfo[1]) && !is_string($tupErrorInfo[0]))
+		|| (isset($tupErrorInfo[2]) && !is_string($tupErrorInfo[1]))
+		|| (isset($tupErrorInfo[3]) && !is_numeric($tupErrorInfo[2])))
 	{
 		$strValueArray = array();
 		
@@ -110,7 +243,7 @@ function _transform_exitWithError($clbGetErrorMessage) {
 	exit;
 }
 
-function _transform_transformStackFrame(array $mapFrameArray = null) {
+function _transform_error_getTransformStackFrame(array $mapFrameArray = null) {
 	if ($mapFrameArray === null) {
 		$mapFrameArray = debug_backtrace();
 	}
@@ -118,7 +251,7 @@ function _transform_transformStackFrame(array $mapFrameArray = null) {
 	for ($i = 0, $n = sizeof($mapFrameArray); $i < $n; $i++) {
 		$mapFrame = $mapFrameArray[$i];
 		
-		if ($mapFrame['function'] == 'transform') {
+		if (($mapFrame['function'] == 'transform' || $mapFrame['function'] == 'transform_debug') && isset($mapFrame['file'])) {
 			$mapTransformFrame = $mapFrameArray[$i];
 			break;
 		}
@@ -128,119 +261,80 @@ function _transform_transformStackFrame(array $mapFrameArray = null) {
 	return $mapTransformFrame;
 }
 
-function _transform_reflectorForCallable($clbTransformer) {
-	if (is_a($clbTransformer, 'Closure') || (is_string($clbTransformer) && strpos($clbTransformer, '::') === false)) {
-		$objReflector = new ReflectionFunction($clbTransformer);
-	} else if (is_array($clbTransformer)) {
-		$objReflector = new ReflectionMethod($clbTransformer[0], $clbTransformer[1]);
-	} else {
-		$objReflector = new ReflectionMethod($clbTransformer);
-	}
-
-	return $objReflector;
-}
-
-function _transform_functionNameForCallable($clbCallable) {
-	if (is_object($clbCallable)) {
-		return '{closure}';
-	}
+function _transform_error_handler($intCode, $strMessage, $strFileName, $intFileLine, array $mapContext) {
+	$mapStackFrameArray = debug_backtrace();
 	
-	if (is_array($clbCallable)) {
-		if (is_string($clbCallable[0])) {
-			$strClassName = $clbCallable[0];
-		} else {
-			$strClassName = get_class($clbCallable[0]);
+	if (($mapCallStackFrame = $mapStackFrameArray[1]) && isset($mapCallStackFrame['file']) && isset($mapCallStackFrame['function'])) {
+		if ($mapCallStackFrame['file'] === __FILE__ && $mapCallStackFrame['function'] === 'call_user_func_array') {
+			if (error_reporting() & E_ERROR || error_reporting() & E_USER_ERROR) {
+				_transform_error_exitWithMessageCallable(function($mapTransformStackFrame) use ($strMessage, $mapCallStackFrame) {
+					// Handle invalid callable errors.
+					if (strpos($strMessage, 'parameter 1') !== false) {
+						$strMessage = str_replace('call_user_func_array', $mapTransformStackFrame['function'], $strMessage);
+						$strMessage = str_replace('parameter 1 to be ', '', $strMessage);
+						
+						return array($strMessage);
+					}
+					
+					// Handle invalid argument errors.
+					if (strpos($strMessage, 'parameter 2') !== false) {
+						$clbTransformer = $mapCallStackFrame['args'][0];
+						
+						$strTransformerName = _transform_callable_getFunctionName($clbTransformer);
+						$strMessage = "{$mapTransformStackFrame['function']}() expects input for $strTransformerName()";
+						
+						// Change file and line location for closures.
+						if (is_object($clbTransformer)) {
+							$objReflector = _transform_callable_getReflector($clbTransformer);
+							return array($strMessage, $objReflector->getFileName(), $objReflector->getStartLine());
+						}
+						
+						return array($strMessage);
+					}
+					
+					assert(0);
+				});
+			}
 		}
-		
-		return "$strClassName::{$clbCallable[1]}";
-	}
-	
-	if (is_string($clbCallable)) {
-		return $clbCallable;
 	}
 	
 	return false;
 }
 
-function transform_returnsTuple($clbFunction) {
-	if (!is_callable($clbFunction, true, $strCallable)) {
-		return function() use ($clbFunction) {
-			_transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
-				$strVariableType = gettype($clbFunction);
-				return array("'$clbFunction' of type $strVariableType is not callable");
-			});
-		};
+function _transform_tuple_forceUnwrap($opqValue) {
+	return $opqValue['__^^TUPLE_DATA_ARRAY__'];
+}
+
+function _transform_tuple_isValid($opqValue) {
+	return is_array($opqValue) && isset($opqValue['__^^RETURNS_TUPLE__']);
+}
+
+function _transform_tuple_unwrap($opqValue) {
+	if (_transform_tuple_isValid($opqValue)) {
+		return _transform_tuple_forceUnwrap($opqValue);
 	}
 	
-	return function() use ($clbFunction) {
-		$tupReturnValues = call_user_func_array($clbFunction, func_get_args());
-		
-		if (!is_array($tupReturnValues)) {
-			_transform_exitWithError(function($mapTransformStackFrame) use ($clbFunction) {
-				if (is_object($clbFunction)) {
-					$objReflector = _transform_reflectorForCallable($clbFunction);
-					
-					return array(
-						'Closure is expected to return array with multiple values',
-						$objReflector->getFileName(),
-						$objReflector->getStartLine(),
-					);
-				} else if (is_array($clbSubject)) {
-					return array('Method is expected to return array with multiple values');
-				} else {
-					return array('Function is expected to return array with multiple values');
-				}
-			});
-		}
-		
-		return array('__^^RETURNS_TUPLE__' => true, '__^^TUPLE_DATA_ARRAY__' => $tupReturnValues);
-	};
+	return $opqValue;
 }
 
-function transform_dumpArgument($intArgument) {
-	return transform_returnsTuple(function() {
-		var_dump(func_get_arg($intArgument));
-		return func_get_args();
-	});
+function _transform_tuple_wrap(array $tupValues) {
+	return array('__^^RETURNS_TUPLE__' => true, '__^^TUPLE_DATA_ARRAY__' => $tupValues);
 }
 
-function transform_dumpArguments() {
-	return transform_returnsTuple(function() {
-		$mixArgumentArray = func_get_args();
-		var_dump($mixArgumentArray);
-		return $mixArgumentArray;
-	});
-}
-
-function transform_dumpAndInspectArgument($intArgument, $clbInspector) {
-	return transform_returnsTuple(function() use ($intArgument, $clbInspector) {
-		$mixArgument = func_get_arg($intArgument);
-		var_dump($mixArgument);
-		call_user_func($clbInspector, $mixArgument);
-		return func_get_args();
-	});
-}
-
-function transform_dumpAndInspectArguments($clbInspector) {
-	return transform_returnsTuple(function() use ($clbInspector) {
-		$mixArgumentArray = func_get_args();
-		var_dump($mixArgumentArray);
-		call_user_func($clbInspector, $mixArgumentArray);
-		return $mixArgumentArray;
-	});
-}
-
-function transform_inspectArgument($intArgument, $clbInspector) {
-	return transform_returnsTuple(function() use ($intArgument, $clbInspector) {
-		call_user_func($clbInspector, func_get_arg($intArgument));
-		return func_get_args();
-	});
-}
-
-function transform_inspectArguments($clbInspector) {
-	return transform_returnsTuple(function() use ($clbInspector) {
-		$mixArgumentArray = func_get_args();
-		call_user_func($clbInspector, $mixArgumentArray);
-		return $mixArgumentArray;
-	});
+abstract class _transform_Transformer {
+	protected $clbTransformer;
+	
+	public function __construct($clbTransformer) {
+		$this->clbTransformer = $clbTransformer;
+	}
+	
+	public function __invoke() {
+		return $this->transform($this->clbTransformer, func_get_args());
+	}
+	
+	abstract protected function transform(callable $clbTransformer, array $mixArgumentArray);
+	
+	public function getCallable() {
+		return $this->clbTransformer;
+	}
 }
